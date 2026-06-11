@@ -14,6 +14,14 @@ Link targets:
 
 Claude and Codex are the default link targets. Cursor also reads skills from `~/.claude/skills` and `~/.codex/skills`, so direct `~/.cursor/skills` links are optional and usually unnecessary when either Claude or Codex links are enabled.
 
+## Install
+
+```bash
+brew install bquenin/symskill/symskill
+```
+
+Or build from source with `cargo install --path .`.
+
 ## Usage
 
 `--source` is required and must come before any subcommand. Repeat the flag or pass a comma-separated list to use several skill roots:

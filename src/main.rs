@@ -11,6 +11,7 @@ use model::{Agent, Inventory};
 #[derive(Debug, Parser)]
 #[command(
     name = "symskill",
+    version,
     about = "Manage per-agent symlinks for SKILL.md skill directories"
 )]
 struct Cli {
