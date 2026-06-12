@@ -12,7 +12,7 @@ Link targets:
 ~/.cursor/skills
 ```
 
-Claude and Codex are the default link targets. Cursor also reads skills from `~/.claude/skills` and `~/.codex/skills`, so direct `~/.cursor/skills` links are optional and usually unnecessary when either Claude or Codex links are enabled.
+Claude and Codex are the default link targets. Cursor always scans `~/.claude/skills` and `~/.codex/skills` as well (this cannot be disabled), so any skill linked for Claude or Codex is automatically available in Cursor. The cursor column reflects this: such skills show `○` in the TUI and `inherit` in `list` output. Direct `~/.cursor/skills` links are only needed for a skill linked to neither Claude nor Codex.
 
 ## Install
 
@@ -31,6 +31,22 @@ cargo run -- --source ~/skills
 cargo run -- --source ~/skills/work,~/skills/personal
 cargo run -- --source ~/skills/work --source ~/skills/personal
 ```
+
+## Discovery
+
+Each source is crawled recursively; any directory containing a `SKILL.md` (matched case-insensitively, so `skill.md` works too) is a skill. Hidden directories, `node_modules`, `__pycache__`, and `target` are skipped.
+
+Nested skills are grouped by the directory that contains them. Directories shared by every skill in a source collapse away, so `--source repo` and `--source repo/skills` produce the same view:
+
+```text
+skills/
+  jira/SKILL.md            -> jira
+  ops/
+    db-restore/SKILL.md    -> ops/db-restore
+    pager-triage/SKILL.md  -> ops/pager-triage
+```
+
+The TUI shows each group as a section heading with its skills indented below; `list` prints the qualified `group/name`. CLI commands accept the bare skill name, or `group/name` when the bare name is ambiguous. Symlinks are always created flat as `<agent skills dir>/<name>`, regardless of nesting.
 
 With no subcommand, the TUI launches. List skills and link status:
 
@@ -58,7 +74,7 @@ cargo run -- --source ~/skills fix jira --agent claude --agent codex
 - `r`: reload
 - `q`, `Esc`, or `Ctrl+C`: quit
 
-Link statuses are shown as symbols: `●` linked, `·` not linked, `▲` wrong target, `✗` blocked.
+Link statuses are shown as symbols: `●` linked, `·` not linked, `○` inherited (available to Cursor through a claude/codex link), `▲` wrong target, `✗` blocked.
 The panel below the table shows the selected skill's full description, its source path, and
 the target of any wrong or blocked link. The header shows total link counts across all agents.
 
@@ -68,5 +84,5 @@ the target of any wrong or blocked link. The header shows total link counts acro
 - `unlink` only removes symlinks that point to the selected source skill.
 - Real directories, files, and symlinks to other targets are shown as blocked or wrong.
 - `wrong` means an existing symlink points to a different source than the current skill source. Use `fix` or `f` to replace those symlinks with links to the current source.
-- CLI commands refuse to act when a skill name matches multiple source directories.
+- CLI commands refuse to act when a skill name matches multiple source directories; use `group/name` to disambiguate.
 - Unreadable directories and malformed `SKILL.md` files are reported as warnings instead of aborting discovery.

@@ -68,9 +68,49 @@ enum Feedback {
     Error,
 }
 
+/// One visible table row: either a group heading or an index into
+/// `Inventory::skills`. Group headings are not selectable.
+enum RowEntry {
+    Group(String),
+    Skill(usize),
+}
+
+/// Skills arrive sorted by (group, name); emit a heading row whenever a
+/// non-empty group starts. Top-level skills sort first and get no heading.
+fn build_rows(inventory: &Inventory) -> Vec<RowEntry> {
+    let mut rows = Vec::new();
+    let mut current_group = None;
+    for (index, skill) in inventory.skills.iter().enumerate() {
+        if !skill.group.is_empty() && current_group != Some(skill.group.as_str()) {
+            rows.push(RowEntry::Group(skill.group.clone()));
+        }
+        current_group = Some(skill.group.as_str());
+        rows.push(RowEntry::Skill(index));
+    }
+    rows
+}
+
+/// Nearest selectable (skill) row at or after `from`, else the nearest before.
+fn nearest_skill_row(rows: &[RowEntry], from: usize) -> Option<usize> {
+    if rows.is_empty() {
+        return None;
+    }
+    let from = from.min(rows.len() - 1);
+    rows[from..]
+        .iter()
+        .position(|row| matches!(row, RowEntry::Skill(_)))
+        .map(|offset| from + offset)
+        .or_else(|| {
+            rows[..from]
+                .iter()
+                .rposition(|row| matches!(row, RowEntry::Skill(_)))
+        })
+}
+
 struct App {
     sources: Vec<PathBuf>,
     inventory: Inventory,
+    rows: Vec<RowEntry>,
     table_state: TableState,
     message: String,
     feedback: Feedback,
@@ -79,13 +119,13 @@ struct App {
 impl App {
     fn load(sources: Vec<PathBuf>) -> Self {
         let inventory = Inventory::load(&sources);
+        let rows = build_rows(&inventory);
         let mut table_state = TableState::default();
-        if !inventory.skills.is_empty() {
-            table_state.select(Some(0));
-        }
+        table_state.select(nearest_skill_row(&rows, 0));
         let mut app = Self {
             sources,
             inventory,
+            rows,
             table_state,
             message: String::new(),
             feedback: Feedback::Info,
@@ -121,34 +161,46 @@ impl App {
     }
 
     fn reload(&mut self) {
+        let selected_path = self.selected_skill().map(|skill| skill.path.clone());
+        let previous_row = self.table_state.selected().unwrap_or(0);
         self.inventory = Inventory::load(&self.sources);
-        let len = self.inventory.skills.len();
-        if len == 0 {
-            self.table_state.select(None);
-        } else {
-            let selected = self.table_state.selected().unwrap_or(0).min(len - 1);
-            self.table_state.select(Some(selected));
-        }
+        self.rows = build_rows(&self.inventory);
+        let selection = selected_path
+            .and_then(|path| {
+                self.rows.iter().position(|row| {
+                    matches!(row, RowEntry::Skill(index) if self.inventory.skills[*index].path == path)
+                })
+            })
+            .or_else(|| nearest_skill_row(&self.rows, previous_row));
+        self.table_state.select(selection);
     }
 
     fn selected_skill(&self) -> Option<&Skill> {
-        self.table_state
-            .selected()
-            .and_then(|index| self.inventory.skills.get(index))
+        match self.rows.get(self.table_state.selected()?)? {
+            RowEntry::Skill(index) => self.inventory.skills.get(*index),
+            RowEntry::Group(_) => None,
+        }
     }
 
     fn move_down(&mut self) {
-        let len = self.inventory.skills.len();
-        if len == 0 {
-            return;
-        }
         let selected = self.table_state.selected().unwrap_or(0);
-        self.table_state.select(Some((selected + 1).min(len - 1)));
+        let next = self.rows[selected.saturating_add(1).min(self.rows.len())..]
+            .iter()
+            .position(|row| matches!(row, RowEntry::Skill(_)))
+            .map(|offset| selected + 1 + offset);
+        if let Some(next) = next {
+            self.table_state.select(Some(next));
+        }
     }
 
     fn move_up(&mut self) {
         let selected = self.table_state.selected().unwrap_or(0);
-        self.table_state.select(Some(selected.saturating_sub(1)));
+        let previous = self.rows[..selected.min(self.rows.len())]
+            .iter()
+            .rposition(|row| matches!(row, RowEntry::Skill(_)));
+        if let Some(previous) = previous {
+            self.table_state.select(Some(previous));
+        }
     }
 
     fn toggle(&mut self, agent: Agent) {
@@ -394,28 +446,45 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
     }
 
     let rows: Vec<Row> = app
-        .inventory
-        .skills
+        .rows
         .iter()
-        .map(|skill| {
-            Row::new(vec![
-                Cell::from(skill.name.clone()),
-                status_symbol_cell(app.inventory.status(skill, Agent::Claude)),
-                status_symbol_cell(app.inventory.status(skill, Agent::Codex)),
-                status_symbol_cell(app.inventory.status(skill, Agent::Cursor)),
-                Cell::from(Span::styled(
-                    squash(&skill.description),
-                    Style::new().fg(MUTED),
-                )),
-            ])
+        .map(|entry| match entry {
+            RowEntry::Group(group) => Row::new(vec![Cell::from(Span::styled(
+                format!("{group}/"),
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ))]),
+            RowEntry::Skill(index) => {
+                let skill = &app.inventory.skills[*index];
+                let name = if skill.group.is_empty() {
+                    skill.name.clone()
+                } else {
+                    format!("  {}", skill.name)
+                };
+                Row::new(vec![
+                    Cell::from(name),
+                    agent_status_cell(&app.inventory, skill, Agent::Claude),
+                    agent_status_cell(&app.inventory, skill, Agent::Codex),
+                    agent_status_cell(&app.inventory, skill, Agent::Cursor),
+                    Cell::from(Span::styled(
+                        squash(&skill.description),
+                        Style::new().fg(MUTED),
+                    )),
+                ])
+            }
         })
         .collect();
 
     let name_width = app
-        .inventory
-        .skills
+        .rows
         .iter()
-        .map(|skill| skill.name.len())
+        .map(|entry| match entry {
+            RowEntry::Group(group) => group.len() + 1,
+            RowEntry::Skill(index) => {
+                let skill = &app.inventory.skills[*index];
+                let indent = if skill.group.is_empty() { 0 } else { 2 };
+                skill.name.len() + indent
+            }
+        })
         .max()
         .unwrap_or(0)
         .clamp(20, 40) as u16;
@@ -456,9 +525,9 @@ fn draw_table(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut App) {
 
     // 4 = top/bottom borders + header row + header margin
     let visible = area.height.saturating_sub(4) as usize;
-    if app.inventory.skills.len() > visible {
+    if app.rows.len() > visible {
         let mut scrollbar_state =
-            ScrollbarState::new(app.inventory.skills.len()).position(app.table_state.offset());
+            ScrollbarState::new(app.rows.len()).position(app.table_state.offset());
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
@@ -526,7 +595,7 @@ fn draw_detail(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     let block = block
         .title(Span::styled(
-            format!(" {} ", skill.name),
+            format!(" {} ", skill.qualified_name()),
             Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
         ))
         .title(
@@ -555,12 +624,20 @@ fn draw_detail(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
 
     let mut spans = Vec::new();
     for agent in Agent::ALL {
-        let status = app.inventory.status(skill, agent);
-        let (symbol, word, color) = status_view(&status);
         spans.push(Span::styled(
             format!("{} ", agent.label()),
             Style::new().fg(MUTED),
         ));
+        if let Some(source) = app.inventory.inherited_via(skill, agent) {
+            spans.push(Span::styled(
+                format!("○ via {}", source.label()),
+                Style::new().fg(GREEN),
+            ));
+            spans.push(Span::raw("    "));
+            continue;
+        }
+        let status = app.inventory.status(skill, agent);
+        let (symbol, word, color) = status_view(&status);
         spans.push(Span::styled(
             format!("{symbol} {word}"),
             Style::new().fg(color),
@@ -627,8 +704,11 @@ fn status_view(status: &LinkStatus) -> (&'static str, &'static str, Color) {
     }
 }
 
-fn status_symbol_cell(status: LinkStatus) -> Cell<'static> {
-    let (symbol, _, color) = status_view(&status);
+fn agent_status_cell(inventory: &Inventory, skill: &Skill, agent: Agent) -> Cell<'static> {
+    if inventory.inherited_via(skill, agent).is_some() {
+        return Cell::from(Line::from(Span::styled("○", Style::new().fg(GREEN))).centered());
+    }
+    let (symbol, _, color) = status_view(&inventory.status(skill, agent));
     Cell::from(
         Line::from(Span::styled(
             symbol,
@@ -652,4 +732,75 @@ fn tilde(path: &Path) -> String {
         return format!("~/{}", rest.display());
     }
     path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn inventory(skills: &[(&str, &str)]) -> Inventory {
+        Inventory {
+            skills: skills
+                .iter()
+                .map(|(name, group)| Skill {
+                    name: name.to_string(),
+                    description: String::new(),
+                    path: PathBuf::from(format!("/src/{group}/{name}")),
+                    group: group.to_string(),
+                })
+                .collect(),
+            statuses: BTreeMap::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn app(inventory: Inventory) -> App {
+        let rows = build_rows(&inventory);
+        let mut table_state = TableState::default();
+        table_state.select(nearest_skill_row(&rows, 0));
+        App {
+            sources: Vec::new(),
+            inventory,
+            rows,
+            table_state,
+            message: String::new(),
+            feedback: Feedback::Info,
+        }
+    }
+
+    #[test]
+    fn build_rows_inserts_heading_when_group_starts() {
+        let inventory = inventory(&[("alpha", ""), ("beta", "ops"), ("gamma", "ops")]);
+        let rows = build_rows(&inventory);
+        assert!(matches!(rows[0], RowEntry::Skill(0)));
+        assert!(matches!(&rows[1], RowEntry::Group(group) if group == "ops"));
+        assert!(matches!(rows[2], RowEntry::Skill(1)));
+        assert!(matches!(rows[3], RowEntry::Skill(2)));
+    }
+
+    #[test]
+    fn movement_skips_group_headings() {
+        let mut app = app(inventory(&[("alpha", ""), ("beta", "ops")]));
+        assert_eq!(app.table_state.selected(), Some(0));
+
+        app.move_down();
+        assert_eq!(app.table_state.selected(), Some(2), "skips the heading row");
+        assert_eq!(app.selected_skill().unwrap().name, "beta");
+
+        app.move_down();
+        assert_eq!(app.table_state.selected(), Some(2), "stays at the end");
+
+        app.move_up();
+        assert_eq!(app.table_state.selected(), Some(0));
+        app.move_up();
+        assert_eq!(app.table_state.selected(), Some(0), "stays at the start");
+    }
+
+    #[test]
+    fn initial_selection_lands_on_first_skill_row() {
+        let app = app(inventory(&[("beta", "ops")]));
+        assert_eq!(app.table_state.selected(), Some(1), "row 0 is the heading");
+        assert_eq!(app.selected_skill().unwrap().name, "beta");
+    }
 }

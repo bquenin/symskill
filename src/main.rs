@@ -37,24 +37,28 @@ enum Command {
     List,
     /// Link a skill into one or more agent skill directories.
     Link {
+        /// Skill name, or group/name for nested skills.
         skill: String,
         #[arg(short, long, value_enum, default_values_t = AgentArg::defaults())]
         agent: Vec<AgentArg>,
     },
     /// Remove a managed symlink from one or more agent skill directories.
     Unlink {
+        /// Skill name, or group/name for nested skills.
         skill: String,
         #[arg(short, long, value_enum, default_values_t = AgentArg::defaults())]
         agent: Vec<AgentArg>,
     },
     /// Toggle a skill link for one or more agents.
     Toggle {
+        /// Skill name, or group/name for nested skills.
         skill: String,
         #[arg(short, long, value_enum, default_values_t = AgentArg::defaults())]
         agent: Vec<AgentArg>,
     },
     /// Replace wrong symlinks with links to the current source skill.
     Fix {
+        /// Skill name, or group/name for nested skills.
         skill: String,
         #[arg(short, long, value_enum, default_values_t = AgentArg::defaults())]
         agent: Vec<AgentArg>,
@@ -125,7 +129,7 @@ fn print_inventory(inventory: &Inventory) {
         let cursor = inventory.status_label(skill, Agent::Cursor);
         println!(
             "{:<32} {:<8} {:<8} {:<8} {}",
-            skill.name,
+            skill.qualified_name(),
             claude,
             codex,
             cursor,
@@ -151,11 +155,14 @@ where
         [] => bail!("skill not found: {skill_name}"),
         [skill] => *skill,
         matches => {
-            let paths: String = matches
+            let candidates: String = matches
                 .iter()
-                .map(|skill| format!("\n  {}", skill.path.display()))
+                .map(|skill| format!("\n  {}  ({})", skill.qualified_name(), skill.path.display()))
                 .collect();
-            bail!("skill name '{skill_name}' matches multiple skills, refusing to guess:{paths}");
+            bail!(
+                "skill name '{skill_name}' matches multiple skills, \
+                 use group/name to disambiguate:{candidates}"
+            );
         }
     };
 
