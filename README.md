@@ -20,7 +20,11 @@ Claude and Codex are the default link targets. Cursor always scans `~/.claude/sk
 brew install bquenin/symskill/symskill
 ```
 
+Homebrew covers macOS and Linux. On Windows, download `symskill-windows-amd64.zip` from the [latest release](https://github.com/bquenin/symskill/releases/latest) and put `symskill.exe` on your `PATH`.
+
 Or build from source with `cargo install --path .`.
+
+On Windows, creating symlinks needs either Developer Mode (Settings → System → For developers) or an elevated shell; without one of those, `link` fails with `os error 1314`.
 
 ## Usage
 
