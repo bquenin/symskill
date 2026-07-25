@@ -56,7 +56,13 @@ jobs:
             # zip rather than tar.gz: it is what Windows users expect and what
             # Explorer opens without extra tooling.
             archive="${BIN_NAME}-${{ matrix.platform }}.zip"
-            7z a "$archive" "$(dirname "$bin")/${BIN_NAME}${ext}" > /dev/null
+            # 7z stores whatever path it is handed and has no strip-components,
+            # so stage the binary alongside the archive to keep it at the root
+            # like `tar -C` does. Relative paths only: 7z.exe is a native
+            # program, so absolute POSIX paths would depend on MSYS translation.
+            cp "$bin" "${BIN_NAME}${ext}"
+            7z a "$archive" "${BIN_NAME}${ext}" > /dev/null
+            rm "${BIN_NAME}${ext}"
           else
             archive="${BIN_NAME}-${{ matrix.platform }}.tar.gz"
             tar -C "$(dirname "$bin")" -czf "$archive" "${BIN_NAME}${ext}"
