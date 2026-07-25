@@ -183,6 +183,15 @@ impl Inventory {
             .find(|source| self.status(skill, *source) == LinkStatus::Linked)
     }
 
+    /// Whether `agent` cannot reach this skill at all — no direct link, and no
+    /// inherited one either. A Cursor entry showing `inherit` is `Missing` but
+    /// perfectly reachable, so callers deciding "is anything left to link?"
+    /// must ask this rather than compare against `LinkStatus::Missing`.
+    pub fn is_unreachable(&self, skill: &Skill, agent: Agent) -> bool {
+        self.status(skill, agent) == LinkStatus::Missing
+            && self.inherited_via(skill, agent).is_none()
+    }
+
     pub fn status_label(&self, skill: &Skill, agent: Agent) -> &'static str {
         if self.inherited_via(skill, agent).is_some() {
             return "inherit";
@@ -499,6 +508,58 @@ mod tests {
             None,
             "a wrong direct link is its own problem, not inheritance"
         );
+    }
+
+    #[test]
+    fn inherited_cursor_is_reachable_but_still_missing() {
+        let skill = skill_at("/src/jira");
+        let inventory = inventory_with(&skill, &[(Agent::Claude, LinkStatus::Linked)]);
+
+        assert_eq!(inventory.status(&skill, Agent::Cursor), LinkStatus::Missing);
+        assert!(
+            !inventory.is_unreachable(&skill, Agent::Cursor),
+            "a cursor entry inheriting a claude link is reachable"
+        );
+        assert!(inventory.is_unreachable(&skill, Agent::Codex));
+    }
+
+    #[test]
+    fn unreachable_tracks_direct_links_for_every_agent() {
+        let skill = skill_at("/src/jira");
+
+        let none = inventory_with(&skill, &[]);
+        for agent in Agent::ALL {
+            assert!(none.is_unreachable(&skill, agent));
+        }
+
+        let all = inventory_with(
+            &skill,
+            &[
+                (Agent::Claude, LinkStatus::Linked),
+                (Agent::Codex, LinkStatus::Linked),
+                (Agent::Cursor, LinkStatus::Linked),
+            ],
+        );
+        for agent in Agent::ALL {
+            assert!(!all.is_unreachable(&skill, agent));
+        }
+    }
+
+    #[test]
+    fn a_wrong_or_blocked_link_is_not_unreachable() {
+        let skill = skill_at("/src/jira");
+
+        let wrong = inventory_with(
+            &skill,
+            &[(Agent::Claude, LinkStatus::WrongTarget(PathBuf::from("/x")))],
+        );
+        assert!(
+            !wrong.is_unreachable(&skill, Agent::Claude),
+            "a wrong link needs f, not another link attempt"
+        );
+
+        let blocked = inventory_with(&skill, &[(Agent::Claude, LinkStatus::Occupied)]);
+        assert!(!blocked.is_unreachable(&skill, Agent::Claude));
     }
 
     #[test]
