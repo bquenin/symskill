@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -322,23 +322,44 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App
             continue;
         };
 
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
-            KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-            KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-            KeyCode::Char('1') => app.toggle(Agent::Claude),
-            KeyCode::Char('2') => app.toggle(Agent::Codex),
-            KeyCode::Char('3') => app.toggle(Agent::Cursor),
-            KeyCode::Char('a') => app.toggle_all(),
-            KeyCode::Char('f') => app.fix_wrong(),
-            KeyCode::Char('r') => {
-                app.reload();
-                app.announce_load();
-            }
-            _ => {}
+        if let Flow::Quit = handle_key(app, key) {
+            return Ok(());
         }
     }
+}
+
+enum Flow {
+    Continue,
+    Quit,
+}
+
+fn handle_key(app: &mut App, key: KeyEvent) -> Flow {
+    // Windows consoles report a Press and a Release for every keystroke, while
+    // Unix terminals only ever report Press. Acting on both runs each action
+    // twice, which silently undoes every toggle: one tap of `1` unlinks and
+    // then links straight back. Repeat is kept so held keys still scroll.
+    if key.kind == KeyEventKind::Release {
+        return Flow::Continue;
+    }
+
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => return Flow::Quit,
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Flow::Quit,
+        KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+        KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+        KeyCode::Char('1') => app.toggle(Agent::Claude),
+        KeyCode::Char('2') => app.toggle(Agent::Codex),
+        KeyCode::Char('3') => app.toggle(Agent::Cursor),
+        KeyCode::Char('a') => app.toggle_all(),
+        KeyCode::Char('f') => app.fix_wrong(),
+        KeyCode::Char('r') => {
+            app.reload();
+            app.announce_load();
+        }
+        _ => {}
+    }
+
+    Flow::Continue
 }
 
 fn draw(frame: &mut ratatui::Frame<'_>, app: &mut App) {
@@ -771,6 +792,50 @@ mod tests {
             message: String::new(),
             feedback: Feedback::Info,
         }
+    }
+
+    fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind)
+    }
+
+    /// Windows reports Press and Release for one keystroke; acting on both ran
+    /// every action twice, so toggles undid themselves. Movement stands in for
+    /// the toggles here because it has no filesystem side effects.
+    #[test]
+    fn key_release_is_ignored_but_press_and_repeat_act() {
+        let mut app = app(inventory(&[("alpha", ""), ("beta", ""), ("gamma", "")]));
+        assert_eq!(app.table_state.selected(), Some(0));
+
+        handle_key(&mut app, key(KeyCode::Char('j'), KeyEventKind::Release));
+        assert_eq!(
+            app.table_state.selected(),
+            Some(0),
+            "a release must not move the selection"
+        );
+
+        handle_key(&mut app, key(KeyCode::Char('j'), KeyEventKind::Press));
+        assert_eq!(app.table_state.selected(), Some(1));
+
+        handle_key(&mut app, key(KeyCode::Char('j'), KeyEventKind::Repeat));
+        assert_eq!(
+            app.table_state.selected(),
+            Some(2),
+            "held keys should still repeat"
+        );
+    }
+
+    #[test]
+    fn quit_ignores_the_release_half_of_the_keystroke() {
+        let mut app = app(inventory(&[("alpha", "")]));
+
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::Char('q'), KeyEventKind::Release)),
+            Flow::Continue
+        ));
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::Char('q'), KeyEventKind::Press)),
+            Flow::Quit
+        ));
     }
 
     #[test]
