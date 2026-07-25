@@ -232,9 +232,13 @@ impl App {
             .iter()
             .map(|agent| (*agent, self.inventory.status(&skill, *agent)))
             .collect();
+        // Cursor reads the claude and codex directories, so a skill it shows as
+        // `inherit` is Missing but already reachable. Counting that as missing
+        // would pin every press to the link branch and make `a` unable to
+        // unlink from the ordinary resting state.
         let any_missing = statuses
             .iter()
-            .any(|(_, status)| *status == LinkStatus::Missing);
+            .any(|(agent, _)| self.inventory.is_unreachable(&skill, *agent));
 
         let mut messages = Vec::new();
         let mut failed = false;

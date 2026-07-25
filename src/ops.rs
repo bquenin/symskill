@@ -66,9 +66,7 @@ pub fn fix_skill(skill: &Skill, agent: Agent) -> Result<OperationResult> {
         }),
         LinkStatus::Missing => link_skill(skill, agent),
         LinkStatus::WrongTarget(target) => {
-            remove_link(&link).with_context(|| format!("remove {}", link.display()))?;
-            create_dir_symlink(&skill.path, &link)
-                .with_context(|| format!("link {} -> {}", link.display(), skill.path.display()))?;
+            replace_link(&link, &skill.path)?;
             Ok(OperationResult {
                 message: format!("replaced {} -> {}", link.display(), target.display()),
             })
@@ -88,6 +86,48 @@ pub fn toggle_skill(skill: &Skill, agent: Agent) -> Result<OperationResult> {
         ),
         LinkStatus::Occupied => bail!("target is occupied: {}", link_path(skill, agent).display()),
     }
+}
+
+/// Repoint an existing symlink at `source` without ever leaving the caller
+/// with nothing: the old link is renamed aside first, and renamed back if
+/// creating the replacement fails.
+fn replace_link(link: &std::path::Path, source: &std::path::Path) -> Result<()> {
+    let backup = backup_path(link);
+
+    if let Ok(metadata) = fs::symlink_metadata(&backup) {
+        if !metadata.file_type().is_symlink() {
+            bail!("refusing to overwrite non-symlink: {}", backup.display());
+        }
+        remove_link(&backup).with_context(|| format!("remove {}", backup.display()))?;
+    }
+
+    fs::rename(link, &backup).with_context(|| format!("move {} aside", link.display()))?;
+
+    match create_dir_symlink(source, link) {
+        Ok(()) => {
+            let _ = remove_link(&backup);
+            Ok(())
+        }
+        Err(error) => match fs::rename(&backup, link) {
+            Ok(()) => Err(error)
+                .with_context(|| format!("link {} -> {}", link.display(), source.display())),
+            Err(restore) => Err(error).with_context(|| {
+                format!(
+                    "link {} -> {} failed and the original link could not be restored \
+                     from {} ({restore}); move it back by hand",
+                    link.display(),
+                    source.display(),
+                    backup.display()
+                )
+            }),
+        },
+    }
+}
+
+fn backup_path(link: &std::path::Path) -> std::path::PathBuf {
+    let mut name = link.file_name().unwrap_or_default().to_os_string();
+    name.push(".symskill-old");
+    link.with_file_name(name)
 }
 
 #[cfg(unix)]
