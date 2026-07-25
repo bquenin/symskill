@@ -25,6 +25,9 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             platform: linux-amd64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-amd64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -37,21 +40,39 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
+        # Windows runners default to pwsh; this script is bash on every OS.
+        shell: bash
         run: |
-          bin="target/${{ matrix.target }}/release/${BIN_NAME}"
+          ext=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            ext=".exe"
+          fi
+          bin="target/${{ matrix.target }}/release/${BIN_NAME}${ext}"
           # Only strip on Linux to avoid corrupting macOS code signatures
           if [[ "${{ runner.os }}" == "Linux" ]]; then
             strip "$bin" || true
           fi
-          archive="${BIN_NAME}-${{ matrix.platform }}.tar.gz"
-          tar -C "$(dirname "$bin")" -czf "$archive" ${BIN_NAME}
-          shasum -a 256 "$archive" > "${BIN_NAME}-${{ matrix.platform }}.sha256"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            # zip rather than tar.gz: it is what Windows users expect and what
+            # Explorer opens without extra tooling.
+            archive="${BIN_NAME}-${{ matrix.platform }}.zip"
+            7z a "$archive" "$(dirname "$bin")/${BIN_NAME}${ext}" > /dev/null
+          else
+            archive="${BIN_NAME}-${{ matrix.platform }}.tar.gz"
+            tar -C "$(dirname "$bin")" -czf "$archive" "${BIN_NAME}${ext}"
+          fi
+          # macOS ships shasum; Linux and Git Bash on Windows ship sha256sum.
+          # Both emit "<hash>  <file>", which is what the tap job parses.
+          if command -v sha256sum > /dev/null 2>&1; then
+            sha256sum "$archive" > "${BIN_NAME}-${{ matrix.platform }}.sha256"
+          else
+            shasum -a 256 "$archive" > "${BIN_NAME}-${{ matrix.platform }}.sha256"
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform }}
-          path: |
-            ${{ env.BIN_NAME }}-${{ matrix.platform }}.tar.gz
-            ${{ env.BIN_NAME }}-${{ matrix.platform }}.sha256
+          # Archive extension varies by OS, so match on the platform stem.
+          path: ${{ env.BIN_NAME }}-${{ matrix.platform }}.*
 
   release:
     needs: build
@@ -67,6 +88,7 @@ jobs:
           generate_release_notes: true
           files: |
             *.tar.gz
+            *.zip
             *.sha256
 
   update-tap:
